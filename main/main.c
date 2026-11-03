@@ -9,16 +9,13 @@ void system_task(void *pvParameter) {
     int last_printed_flow = -1;
 
     while (1) {
-        // 1. Update status LEDs immediately when state changes
         update_leds();
 
-        // 2. Handle Beep if requested by ISR
         if (system_state.beep_requested) {
             system_state.beep_requested = false;
             buzzer_beep();
         }
 
-        // 3. Read Potentiometer and print on >= 2% change or limits (0%, 100%)
         int current_flow = read_potentiometer_percentage();
         system_state.flow_percentage = current_flow;
 
@@ -44,7 +41,6 @@ void led_blink_task(void *pvParameter) {
             led3_state = !led3_state;
             gpio_set_level(PIN_LED_FLOW, led3_state ? 0 : 1); // Active LOW
 
-            // 100% flow = fast blink (50ms), 1% flow = slow blink (500ms)
             int blink_delay = 500 - (flow * 450 / 100);
             vTaskDelay(pdMS_TO_TICKS(blink_delay));
         } else {
@@ -57,6 +53,9 @@ void led_blink_task(void *pvParameter) {
 
 void app_main(void) {
     hardware_init();
+
+    // Quick startup beep to confirm buzzer PWM works immediately on boot
+    buzzer_beep();
 
     xTaskCreate(system_task, "system_task", 4096, NULL, 5, NULL);
     xTaskCreate(led_blink_task, "led_blink_task", 2048, NULL, 4, NULL);

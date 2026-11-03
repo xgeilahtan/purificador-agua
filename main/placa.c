@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "placa.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -15,26 +16,33 @@ PurifierState_t system_state = {
     .beep_requested = false
 };
 
-static volatile uint64_t last_isr_time_natural = 0;
-static volatile uint64_t last_isr_time_chilled = 0;
+static volatile uint32_t last_isr_time_natural = 0;
+static volatile uint32_t last_isr_time_chilled = 0;
+static volatile bool btn_natural_pressed = false;
+static volatile bool btn_chilled_pressed = false;
 
 static adc_oneshot_unit_handle_t adc1_handle = NULL;
 
 static void buzzer_pwm(int duty) {
-    if (duty < 0) duty = 0;
-    if (duty > 255) duty = 255;
+    if (duty <= 0) {
+        duty = 0;
+    } else if (duty >= 255) {
+        // Prevent 100% DC lock if VOLUME_BUZZER was set to 512
+        duty = 128;
+    }
     ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty));
     ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0));
 }
 
 static void IRAM_ATTR button_isr_handler(void* arg) {
     uint32_t gpio_num = (uint32_t) arg;
-    uint64_t current_time = (uint64_t)esp_timer_get_time() / 1000ULL;
+    uint32_t current_time = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
     int level = gpio_get_level(gpio_num);
 
     if (gpio_num == PIN_BTN_NATURAL) {
         if (level == 1) {
-            if ((current_time - last_isr_time_natural) >= DEBOUNCE_TIME_MS) {
+            if (!btn_natural_pressed && (current_time - last_isr_time_natural) > DEBOUNCE_TIME_MS) {
+                btn_natural_pressed = true;
                 system_state.natural_active = !system_state.natural_active;
                 if (system_state.natural_active) {
                     system_state.chilled_active = false;
@@ -43,12 +51,15 @@ static void IRAM_ATTR button_isr_handler(void* arg) {
                 last_isr_time_natural = current_time;
             }
         } else {
-            // Lock timer on falling edge (1 -> 0) to filter release spring bounce
-            last_isr_time_natural = current_time;
+            if (btn_natural_pressed && (current_time - last_isr_time_natural) > 30) {
+                btn_natural_pressed = false;
+                last_isr_time_natural = current_time;
+            }
         }
     } else if (gpio_num == PIN_BTN_CHILLED) {
         if (level == 1) {
-            if ((current_time - last_isr_time_chilled) >= DEBOUNCE_TIME_MS) {
+            if (!btn_chilled_pressed && (current_time - last_isr_time_chilled) > DEBOUNCE_TIME_MS) {
+                btn_chilled_pressed = true;
                 system_state.chilled_active = !system_state.chilled_active;
                 if (system_state.chilled_active) {
                     system_state.natural_active = false;
@@ -57,8 +68,10 @@ static void IRAM_ATTR button_isr_handler(void* arg) {
                 last_isr_time_chilled = current_time;
             }
         } else {
-            // Lock timer on falling edge (1 -> 0) to filter release spring bounce
-            last_isr_time_chilled = current_time;
+            if (btn_chilled_pressed && (current_time - last_isr_time_chilled) > 30) {
+                btn_chilled_pressed = false;
+                last_isr_time_chilled = current_time;
+            }
         }
     }
 }
@@ -101,10 +114,10 @@ void hardware_init(void) {
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_4, &chan_config));
 
-    // 4) Buzzer Config (PWM LEDC 8-bit, 2500 Hz on GPIO 2)
+    // 4) Buzzer Config (PWM LEDC 8-bit, 2500 Hz on GPIO 2 — matches maquina_pelucias)
     const ledc_timer_config_t ledc_timer = {
         .speed_mode       = LEDC_LOW_SPEED_MODE,
-        .duty_resolution  = LEDC_TIMER_8_BIT, // Matches VOLUME_BUZZER = 128 (50% duty)
+        .duty_resolution  = LEDC_TIMER_8_BIT,
         .timer_num        = LEDC_TIMER_0,
         .freq_hz          = 2500,
         .clk_cfg          = LEDC_AUTO_CLK
@@ -139,6 +152,7 @@ void hardware_init(void) {
 }
 
 void buzzer_beep(void) {
+    printf("BEEP! (Natural: %d | Chilled: %d)\n", system_state.natural_active, system_state.chilled_active);
     buzzer_pwm(VOLUME_BUZZER);
     vTaskDelay(pdMS_TO_TICKS(100));
     buzzer_pwm(0);

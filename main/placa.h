@@ -14,7 +14,7 @@
 #define PIN_POT_VCC        23
 #define PIN_POT_ADC        32 // ADC1_CHANNEL_4
 
-// Constants (VOLUME_BUZZER = 128 is 50% duty cycle in 8-bit LEDC resolution)
+// Constants (128 = 50% duty cycle in 8-bit LEDC mode)
 #define VOLUME_BUZZER      128
 #define DEBOUNCE_TIME_MS   200
 

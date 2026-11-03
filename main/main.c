@@ -1,62 +1,92 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "driver/gpio.h"
+#include <stdbool.h>
+#include <stdint.h>
 #include "placa.h"
 
-void system_task(void *pvParameter) {
-    int last_printed_flow = -1;
+typedef enum {
+    ESTADO_PARADO = 0,
+    ESTADO_AGUA_NATURAL,
+    ESTADO_AGUA_GELADA
+} estado_purificador_t;
+
+void app_main(void)
+{
+    placa_inicializar();
+
+    // Bipe curto ao ligar a placa para confirmar imediatamente que o buzzer esta funcionando
+    placa_bip(100);
+
+    estado_purificador_t estado = ESTADO_PARADO;
+    uint64_t ultimo_toggle_fluxo_ms = millis();
+    uint64_t ultimo_log_ms = millis();
+    bool led_fluxo_aceso = false;
+
+    printf("\n=== PURIFICADOR DE AGUA INICIADO ===\n");
+    printf("Botao 1 (GPIO34): Agua Natural | Botao 2 (GPIO35): Agua Gelada\n");
+    printf("Potenciometro (GPIO32): Regula a vazao (0 a 100%%)\n\n");
 
     while (1) {
-        update_leds();
+        const uint64_t agora = millis();
+        const int vazao = placa_ler_vazao();
 
-        if (system_state.beep_requested) {
-            system_state.beep_requested = false;
-            buzzer_beep();
-        }
-
-        int current_flow = read_potentiometer_percentage();
-        system_state.flow_percentage = current_flow;
-
-        if (abs(current_flow - last_printed_flow) >= 2 || current_flow == 0 || current_flow == 100) {
-            if (current_flow != last_printed_flow) {
-                printf("Water Flow: %d%%\n", current_flow);
-                last_printed_flow = current_flow;
+        // Verifica clique no Botao 1 (Agua Natural)
+        if (placa_clicou_natural()) {
+            placa_bip(100); // Toca o buzzer por 100 ms
+            if (estado == ESTADO_AGUA_NATURAL) {
+                estado = ESTADO_PARADO;
+                printf(">>> Fluxo DESLIGADO.\n");
+            } else {
+                estado = ESTADO_AGUA_NATURAL;
+                ultimo_toggle_fluxo_ms = agora;
+                led_fluxo_aceso = true;
+                printf(">>> Agua NATURAL selecionada!\n");
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-}
-
-void led_blink_task(void *pvParameter) {
-    bool led3_state = false;
-
-    while (1) {
-        bool is_flowing = system_state.natural_active || system_state.chilled_active;
-        int flow = system_state.flow_percentage;
-
-        if (is_flowing && flow > 0) {
-            led3_state = !led3_state;
-            gpio_set_level(PIN_LED_FLOW, led3_state ? 0 : 1); // Active LOW
-
-            int blink_delay = 500 - (flow * 450 / 100);
-            vTaskDelay(pdMS_TO_TICKS(blink_delay));
-        } else {
-            gpio_set_level(PIN_LED_FLOW, 1); // OFF
-            led3_state = false;
-            vTaskDelay(pdMS_TO_TICKS(50));
+        // Verifica clique no Botao 2 (Agua Gelada)
+        if (placa_clicou_gelada()) {
+            placa_bip(100); // Toca o buzzer por 100 ms
+            if (estado == ESTADO_AGUA_GELADA) {
+                estado = ESTADO_PARADO;
+                printf(">>> Fluxo DESLIGADO.\n");
+            } else {
+                estado = ESTADO_AGUA_GELADA;
+                ultimo_toggle_fluxo_ms = agora;
+                led_fluxo_aceso = true;
+                printf(">>> Agua GELADA selecionada!\n");
+            }
         }
+
+        // Controle visual dos LEDs (nao bloqueante)
+        if (estado == ESTADO_PARADO || vazao == 0) {
+            led_fluxo_aceso = false;
+            placa_set_leds(estado == ESTADO_AGUA_NATURAL,
+                           estado == ESTADO_AGUA_GELADA,
+                           false);
+        } else {
+            // Quanto maior a vazao (1..100%), menor o meio-periodo da piscada (500 ms ate 80 ms)
+            uint32_t meio_periodo_ms = (uint32_t)(500 - ((vazao * 420) / 100));
+            if (meio_periodo_ms < 80U) meio_periodo_ms = 80U;
+
+            if (agora - ultimo_toggle_fluxo_ms >= meio_periodo_ms) {
+                ultimo_toggle_fluxo_ms = agora;
+                led_fluxo_aceso = !led_fluxo_aceso;
+            }
+
+            placa_set_leds(estado == ESTADO_AGUA_NATURAL,
+                           estado == ESTADO_AGUA_GELADA,
+                           led_fluxo_aceso);
+        }
+
+        // Log periodico no monitor serial a cada 500 ms
+        if (agora - ultimo_log_ms >= 500) {
+            ultimo_log_ms = agora;
+            const char *nome_estado = (estado == ESTADO_AGUA_NATURAL) ? "NATURAL" :
+                                      (estado == ESTADO_AGUA_GELADA)  ? "GELADA"  : "PARADO";
+            printf("Estado: %-7s | Vazao: %3d%%\n", nome_estado, vazao);
+        }
+
+        // Pausa curta de 15 ms para liberar a CPU sem bloquear a leitura dos botoes
+        delay_ms(15);
     }
-}
-
-void app_main(void) {
-    hardware_init();
-
-    // Quick startup beep to confirm buzzer PWM works immediately on boot
-    buzzer_beep();
-
-    xTaskCreate(system_task, "system_task", 4096, NULL, 5, NULL);
-    xTaskCreate(led_blink_task, "led_blink_task", 2048, NULL, 4, NULL);
 }
